@@ -26,6 +26,7 @@
 #include <iostream>
 #include <iterator>
 #include <map>
+
 #include <mutex>
 #include <vector>
 
@@ -48,7 +49,7 @@ private:
   framework::NetworkLayer *networkLayer;
   bool stop = false;
 
-  // --- Packet format constants ---
+  // ── Packet format ──
   enum : uint32_t {
     DATA_HEADER = 5, // type(1) + seq(2) + totalPkts(2)
     ACK_HEADER = 11, // type(1) + ackBase(2) + sackMask(8)
@@ -57,66 +58,55 @@ private:
     TYPE_ACK = 1
   };
 
-  // --- Sender state ---
-  std::vector<std::vector<int32_t>> packetBuffer; // all pre-built data packets
-  std::vector<bool> acked;                        // per-packet ACK status
-  std::vector<int64_t> sentTime; // send timestamp (ms) per packet
-  uint32_t sendBase = 0;         // first unacked sequence number
-  uint32_t nextSeq = 0;          // next sequence to send
-  uint32_t totalPkts = 0;        // total number of data packets
-  std::mutex senderMtx; // guards sender state accessed from TimeoutElapsed
+  // ── Sender state ──
+  std::vector<std::vector<int32_t>> packetBuffer;
+  std::vector<bool> acked;
+  std::vector<int64_t> sentTime;
+  uint32_t sendBase = 0;
+  uint32_t nextSeq = 0;
+  uint32_t totalPkts = 0;
+  std::mutex senderMtx;
 
-  // Congestion control (CUBIC-inspired)
-  double cwnd = 8.0;
-  double ssthresh = 40.0;
-  double wMax = 0.0;
+  // ── Congestion control — server-tuned AIMD ──
+  double cwnd = 10.0;
+  double ssthresh = 30.0;
   int64_t lastLossTime = 0;
-  int64_t lastLossEventTime = 0; // for deduplicating loss events
-  static constexpr double CUBIC_C = 0.4;
-  static constexpr double CUBIC_BETA = 0.8;
 
-  // Recovery mode (like TCP SACK recovery)
-  bool inRecovery = false;
-  uint32_t recoverySeq = 0; // highest seq when recovery started
+  // ── RTT estimation (Jacobson/Karels) ──
+  double estRtt = 650.0; // ms — matches challenge server RTT
+  double devRtt = 50.0;  // ms — initial RTO = 650+200 = 850ms
+  double rtoBackoff = 1.0;
 
-  // RTT estimation (Jacobson/Karels)
-  double estRtt = 500.0; // ms
-  double devRtt = 100.0; // ms — initial RTO = 500+400 = 900ms
-  double rtoBackoff = 1.0; // exponential backoff multiplier (standard TCP)
+  // ── Retransmit tracking ──
+  std::vector<bool> retransmitted;
 
-  // Retransmit tracking
-  std::vector<bool> retransmitted; // has this packet been retransmitted?
-
-  // Duplicate ACK detection (for head-of-line retransmit)
+  // ── Duplicate ACK detection ──
   uint32_t lastAckBase = 0;
   uint32_t dupAckCount = 0;
 
-  // Pacing
+  // ── Keepalive ──
+  int64_t lastActivity = 0;
   int64_t lastSendTime = 0;
 
+  // ── Methods ──
   void ccOnAck(uint32_t ackedCount);
   void ccOnLoss();
   void ccOnTimeout();
   double getRTO();
   void updateRTT(double sampleMs);
-  void sackRetransmit(uint32_t ackBase, uint64_t sackMask);
+  void handleSackGaps(uint32_t ackBase, uint64_t sackMask);
 
-  // Build helpers
   std::vector<int32_t> buildDataPacket(uint32_t seq, uint32_t total,
                                        const std::vector<int32_t> &fileData,
                                        uint32_t offset, uint32_t len);
   std::vector<int32_t> buildAckPacket(uint32_t ackBase, uint64_t sackMask);
 
-  // Parse helpers
   uint32_t parseSeq(const std::vector<int32_t> &pkt);
   uint32_t parseTotalPkts(const std::vector<int32_t> &pkt);
   uint32_t parseAckBase(const std::vector<int32_t> &pkt);
   uint64_t parseSackMask(const std::vector<int32_t> &pkt);
 
   int64_t nowMs();
-
-  // --- Receiver state ---
-  // (kept local in receiver() method)
 };
 
 } /* namespace my_protocol */
