@@ -28,7 +28,7 @@ std::string groupToken = "1b197b7f-bbc6-4076-8ce9-e1ebb44107a4";
 
 // Choose ID of test file to transmit: 1, 2, 3, 4, 5 or 6
 // Sizes in bytes are: 248, 2085, 6267, 21067, 53228, 141270
-std::string file = "1";
+std::string file = "6";
 
 // Change to your protocol implementation
 framework::IRDTProtocol *createProtocol() { return new MyProtocol(); }
