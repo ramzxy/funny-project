@@ -14,6 +14,9 @@
  **************************************************************************
  */
 
+//Nicolae Iovu , s3707792
+//Ilia Mirzaali, s3534162
+
 #include "MyProtocol.h"
 
 #include <algorithm>
@@ -22,15 +25,11 @@
 
 namespace my_protocol {
 
-// ─────────────────── Helpers ───────────────────
-
 int64_t MyProtocol::nowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
 }
-
-// ── Packet builders (with XOR checksum over header bytes 1..4) ──
 
 std::vector<int32_t>
 MyProtocol::buildDataPacket(uint32_t seq, uint32_t total,
@@ -61,8 +60,6 @@ std::vector<int32_t> MyProtocol::buildAckPacket(uint32_t ackBase,
   return pkt;
 }
 
-// ── Parsers + checksum verification ──
-
 uint32_t MyProtocol::parseSeq(const std::vector<int32_t> &pkt) {
   return ((pkt[1] & 0xFF) << 8) | (pkt[2] & 0xFF);
 }
@@ -81,19 +78,11 @@ bool MyProtocol::verifyAckChecksum(const std::vector<int32_t> &pkt) {
   return (pkt[5] & 0xFF) == expected;
 }
 
-// ─────────────────── Constructor / Destructor ───────────────────
-
 MyProtocol::MyProtocol() { this->networkLayer = nullptr; }
 
 MyProtocol::~MyProtocol() {}
 
 void MyProtocol::setStop() { this->stop = true; }
-
-// ─────────────────── SENDER ───────────────────
-//
-// Dead-simple sliding window. No framework timers. No threads. No mutex.
-// One loop: receive ACKs -> retransmit stale -> send new -> sleep 1ms.
-// XOR checksum on ACKs prevents corrupted ACKs from causing data loss.
 
 void MyProtocol::sender() {
   std::cout << "Sending..." << std::endl;
@@ -122,7 +111,6 @@ void MyProtocol::sender() {
   while (!stop && sendBase < totalPkts) {
     int64_t now = nowMs();
 
-    // ── Phase 1: Process all pending ACKs ──
     std::vector<int32_t> pkt;
     while (networkLayer->receivePacket(&pkt)) {
       if (pkt.size() < ACK_HEADER || (pkt[0] & 0xFF) != TYPE_ACK)
@@ -133,17 +121,14 @@ void MyProtocol::sender() {
       uint32_t ab = ((pkt[1] & 0xFF) << 8) | (pkt[2] & 0xFF);
       uint16_t sm = ((pkt[3] & 0xFF) << 8) | (pkt[4] & 0xFF);
 
-      // Validate range
       if (ab > nextSeq || ab > totalPkts)
         continue;
 
-      // Cumulative ACK
       while (sendBase < ab) {
         acked[sendBase] = true;
         sendBase++;
       }
 
-      // SACK
       for (uint32_t i = 0; i < SACK_BITS; i++) {
         if ((sm >> i) & 1U) {
           uint32_t s = ab + i;
@@ -156,7 +141,6 @@ void MyProtocol::sender() {
     if (sendBase >= totalPkts)
       break;
 
-    // ── Phase 2: Count in-flight + retransmit timed-out ──
     uint32_t inFlight = 0;
     for (uint32_t i = sendBase; i < nextSeq && i < totalPkts; i++) {
       if (!acked[i]) {
@@ -168,7 +152,6 @@ void MyProtocol::sender() {
       }
     }
 
-    // ── Phase 3: Send new packets to fill window ──
     while (nextSeq < totalPkts && inFlight < WINDOW) {
       networkLayer->sendPacket(packetBuffer[nextSeq]);
       sentTime[nextSeq] = now;
@@ -181,8 +164,6 @@ void MyProtocol::sender() {
 
   std::cout << "Sender finished." << std::endl;
 }
-
-// ─────────────────── RECEIVER ───────────────────
 
 std::vector<int32_t> MyProtocol::receiver() {
   std::cout << "Receiving..." << std::endl;
@@ -214,7 +195,7 @@ std::vector<int32_t> MyProtocol::receiver() {
       }
 
       if (total != expectedTotal)
-        continue; // corrupted totalPkts
+        continue;
 
       if (seq < expectedTotal && !received[seq]) {
         std::vector<int32_t> payload(packet.begin() + DATA_HEADER,
@@ -265,18 +246,12 @@ std::vector<int32_t> MyProtocol::receiver() {
   return fileContents;
 }
 
-// ─────────────────── TIMEOUT (no-op) ───────────────────
-
-void MyProtocol::TimeoutElapsed(int32_t tag) {
-  (void)tag; // unused — all retransmission in main sender loop
-}
-
-// ─────────────────── Framework setters ───────────────────
-
 void MyProtocol::setFileID(std::string id) { fileID = id; }
 
 void MyProtocol::setNetworkLayer(framework::NetworkLayer *nLayer) {
   networkLayer = nLayer;
 }
+
+void MyProtocol::TimeoutElapsed(int32_t) {}
 
 } /* namespace my_protocol */

@@ -14,6 +14,9 @@
  **************************************************************************
  */
 
+//Nicolae Iovu , s3707792
+//Ilia Mirzaali, s3534162
+
 #ifndef MyProtocol_H_
 #define MyProtocol_H_
 
@@ -43,7 +46,6 @@ private:
   framework::NetworkLayer *networkLayer;
   bool stop = false;
 
-  // ── Packet format (with XOR checksum) ──
   enum : uint32_t {
     DATA_HEADER = 6,  // type(1) + seq(2) + totalPkts(2) + xor(1)
     ACK_HEADER = 6,   // type(1) + ackBase(2) + sackMask(2) + xor(1)
@@ -57,7 +59,6 @@ private:
   static const int64_t TIMEOUT_MS = 700;
   static const int64_t ACK_KEEPALIVE_MS = 150;
 
-  // ── Sender state ──
   std::vector<std::vector<int32_t>> packetBuffer;
   std::vector<bool> acked;
   std::vector<int64_t> sentTime;
@@ -65,7 +66,6 @@ private:
   uint32_t nextSeq = 0;
   uint32_t totalPkts = 0;
 
-  // ── Methods ──
   std::vector<int32_t> buildDataPacket(uint32_t seq, uint32_t total,
                                        const std::vector<int32_t> &fileData,
                                        uint32_t offset, uint32_t len);
