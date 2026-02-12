@@ -73,17 +73,22 @@ private:
   int64_t lastLossTime = 0;
   int64_t lastLossEventTime = 0; // for deduplicating loss events
   static constexpr double CUBIC_C = 0.4;
-  static constexpr double CUBIC_BETA = 0.7;
+  static constexpr double CUBIC_BETA = 0.8;
+
+  // Recovery mode (like TCP SACK recovery)
+  bool inRecovery = false;
+  uint32_t recoverySeq = 0; // highest seq when recovery started
 
   // RTT estimation (Jacobson/Karels)
   double estRtt = 200.0; // ms
   double devRtt = 50.0;  // ms
 
-  // Fast retransmit tracking
-  std::vector<bool> fastRetransmitted; // already fast-retransmitted?
+  // Retransmit tracking
+  std::vector<bool> retransmitted; // has this packet been retransmitted?
 
   void ccOnAck(uint32_t ackedCount);
   void ccOnLoss();
+  void ccOnTimeout();
   double getRTO();
   void updateRTT(double sampleMs);
   void sackRetransmit(uint32_t ackBase, uint64_t sackMask);

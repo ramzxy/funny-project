@@ -87,10 +87,10 @@ uint64_t MyProtocol::parseSackMask(const std::vector<int32_t> &pkt) {
 
 void MyProtocol::ccOnAck(uint32_t ackedCount) {
   if (cwnd < ssthresh) {
-    // Slow start
+    // Slow start: exponential growth
     cwnd += ackedCount;
   } else {
-    // CUBIC
+    // CUBIC congestion avoidance
     double now = (double)nowMs();
     double tSec = (now - (double)lastLossTime) / 1000.0;
     double K = std::cbrt(wMax * (1.0 - CUBIC_BETA) / CUBIC_C);
@@ -98,27 +98,48 @@ void MyProtocol::ccOnAck(uint32_t ackedCount) {
     double increment = (target - cwnd) / cwnd;
     cwnd += std::max(0.0, increment) * ackedCount;
   }
-  // Cap window to avoid queue overflow
   if (cwnd > 200.0)
     cwnd = 200.0;
 }
 
+// ccOnLoss: called for SACK-detected loss (fast retransmit)
+// Less severe — multiplicative decrease but stay in congestion avoidance
 void MyProtocol::ccOnLoss() {
-  // Deduplicate loss events: only cut window once per RTT
+  // Deduplicate: only cut once per RTT
   int64_t now = nowMs();
   if (now - lastLossEventTime < (int64_t)estRtt) {
-    return; // already handled a loss recently
+    return;
   }
   lastLossEventTime = now;
 
   wMax = cwnd;
-  if (wMax < 2.0)
-    wMax = 2.0;
+  if (wMax < 4.0)
+    wMax = 4.0;
   cwnd = cwnd * CUBIC_BETA;
   ssthresh = cwnd;
   lastLossTime = now;
-  if (cwnd < 2.0)
-    cwnd = 2.0;
+  if (cwnd < 4.0)
+    cwnd = 4.0;
+}
+
+// ccOnTimeout: called for RTO timeout — more severe
+void MyProtocol::ccOnTimeout() {
+  // Deduplicate: only cut once per RTT
+  int64_t now = nowMs();
+  if (now - lastLossEventTime < (int64_t)estRtt) {
+    return;
+  }
+  lastLossEventTime = now;
+
+  wMax = cwnd;
+  if (wMax < 4.0)
+    wMax = 4.0;
+  ssthresh = cwnd * CUBIC_BETA;
+  cwnd = 4.0; // reset to initial window on timeout (like TCP)
+  lastLossTime = now;
+
+  // Exit recovery on timeout
+  inRecovery = false;
 }
 
 double MyProtocol::getRTO() {
@@ -138,15 +159,13 @@ void MyProtocol::updateRTT(double sampleMs) {
   estRtt = 0.875 * estRtt + 0.125 * sampleMs;
 }
 
-// ── SACK-based fast retransmit ──
+// ── SACK-based fast retransmit with recovery mode ──
 
 void MyProtocol::sackRetransmit(uint32_t ackBase, uint64_t sackMask) {
-  // Find gaps in SACK: packets between ackBase and the highest SACK'd packet
-  // that haven't been received yet — retransmit them immediately.
   if (sackMask == 0)
     return;
 
-  // Find highest SACK'd offset
+  // Find highest SACK'd offset to know where gaps are
   int highestBit = -1;
   for (int i = 63; i >= 0; i--) {
     if ((sackMask >> i) & 1) {
@@ -157,17 +176,35 @@ void MyProtocol::sackRetransmit(uint32_t ackBase, uint64_t sackMask) {
   if (highestBit < 0)
     return;
 
-  // Retransmit gaps: packets from ackBase to ackBase+highestBit that are NOT in SACK
+  // Check if there are actual gaps (missing packets below highest SACK)
+  bool hasGaps = false;
+  for (int i = 0; i < highestBit; i++) {
+    uint32_t seq = ackBase + i;
+    if (seq < totalPkts && !acked[seq] && !((sackMask >> i) & 1)) {
+      hasGaps = true;
+      break;
+    }
+  }
+  if (!hasGaps)
+    return;
+
+  // Enter recovery if not already in it
+  if (!inRecovery) {
+    inRecovery = true;
+    recoverySeq = nextSeq > 0 ? nextSeq - 1 : 0;
+    ccOnLoss(); // cut cwnd ONCE when entering recovery
+  }
+
+  // Retransmit gap packets (no further cwnd cuts)
   for (int i = 0; i <= highestBit; i++) {
     uint32_t seq = ackBase + i;
     if (seq >= totalPkts)
       break;
-    if (!acked[seq] && !((sackMask >> i) & 1) && !fastRetransmitted[seq]) {
+    if (!acked[seq] && !((sackMask >> i) & 1) && !retransmitted[seq]) {
       networkLayer->sendPacket(packetBuffer[seq]);
       sentTime[seq] = nowMs();
+      retransmitted[seq] = true;
       framework::SetTimeout((long)getRTO(), this, (int32_t)seq);
-      fastRetransmitted[seq] = true;
-      ccOnLoss(); // only triggers once per RTT due to dedup
     }
   }
 }
@@ -199,7 +236,7 @@ void MyProtocol::sender() {
   packetBuffer.resize(totalPkts);
   acked.resize(totalPkts, false);
   sentTime.resize(totalPkts, 0);
-  fastRetransmitted.resize(totalPkts, false);
+  retransmitted.resize(totalPkts, false);
 
   for (uint32_t i = 0; i < totalPkts; i++) {
     uint32_t offset = i * DATASIZE;
@@ -211,6 +248,7 @@ void MyProtocol::sender() {
   nextSeq = 0;
   lastLossTime = nowMs();
   lastLossEventTime = 0;
+  inRecovery = false;
 
   // Main sender loop
   while (!stop) {
@@ -221,7 +259,6 @@ void MyProtocol::sender() {
       while (nextSeq < totalPkts && nextSeq < sendBase + effectiveWindow) {
         networkLayer->sendPacket(packetBuffer[nextSeq]);
         sentTime[nextSeq] = nowMs();
-        // Set a timeout for this packet
         framework::SetTimeout((long)getRTO(), this, (int32_t)nextSeq);
         nextSeq++;
       }
@@ -241,8 +278,8 @@ void MyProtocol::sender() {
         // Advance send base for cumulative ACK
         while (sendBase < ackBase && sendBase < totalPkts) {
           if (!acked[sendBase]) {
-            // RTT sample from cumulative ACK
-            if (sentTime[sendBase] > 0) {
+            // Karn's algorithm: only sample RTT from non-retransmitted packets
+            if (sentTime[sendBase] > 0 && !retransmitted[sendBase]) {
               double sample = (double)(nowMs() - sentTime[sendBase]);
               updateRTT(sample);
             }
@@ -252,13 +289,18 @@ void MyProtocol::sender() {
           sendBase++;
         }
 
+        // Exit recovery when we've acked past the recovery point
+        if (inRecovery && sendBase > recoverySeq) {
+          inRecovery = false;
+        }
+
         // Process SACK bitmask
         for (int i = 0; i < 64; i++) {
           if ((sackMask >> i) & 1) {
             uint32_t sackSeq = ackBase + i;
             if (sackSeq < totalPkts && !acked[sackSeq]) {
-              // RTT sample from SACK'd packets too
-              if (sentTime[sackSeq] > 0 && !fastRetransmitted[sackSeq]) {
+              // Karn's: only sample RTT from non-retransmitted
+              if (sentTime[sackSeq] > 0 && !retransmitted[sackSeq]) {
                 double sample = (double)(nowMs() - sentTime[sackSeq]);
                 updateRTT(sample);
               }
@@ -272,7 +314,7 @@ void MyProtocol::sender() {
           ccOnAck(ackedCount);
         }
 
-        // Fast retransmit: use SACK info to retransmit missing packets
+        // SACK-based fast retransmit (with recovery mode)
         sackRetransmit(ackBase, sackMask);
 
         // Check if all packets have been acked
@@ -285,8 +327,7 @@ void MyProtocol::sender() {
     }
 
     if (sendBase >= totalPkts) {
-      // Done — but keep running until framework sets stop
-      // (the framework will signal stop once the receiver confirms)
+      // Done — keep running until framework sets stop
     }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -300,9 +341,9 @@ void MyProtocol::sender() {
 std::vector<int32_t> MyProtocol::receiver() {
   std::cout << "Receiving..." << std::endl;
 
-  uint32_t expectedTotal = 0; // 0 = not yet known
-  uint32_t recvExpected = 0;  // next expected in-order sequence
-  std::map<uint32_t, std::vector<int32_t>> recvBuffer; // seq -> payload data
+  uint32_t expectedTotal = 0;
+  uint32_t recvExpected = 0;
+  std::map<uint32_t, std::vector<int32_t>> recvBuffer;
 
   while (true) {
     std::vector<int32_t> packet;
@@ -330,7 +371,7 @@ std::vector<int32_t> MyProtocol::receiver() {
           recvExpected++;
         }
 
-        // Build SACK bitmask: bits for packets beyond recvExpected
+        // Build SACK bitmask
         uint64_t sackMask = 0;
         for (int i = 0; i < 64; i++) {
           uint32_t checkSeq = recvExpected + i;
@@ -355,7 +396,7 @@ std::vector<int32_t> MyProtocol::receiver() {
     }
   }
 
-  // Assemble the file from the received packets in order
+  // Assemble the file
   std::vector<int32_t> fileContents;
   for (uint32_t i = 0; i < expectedTotal; i++) {
     auto &payload = recvBuffer[i];
@@ -374,15 +415,15 @@ void MyProtocol::TimeoutElapsed(int32_t tag) {
 
   uint32_t seq = (uint32_t)tag;
 
-  // Only retransmit if not yet acked and still in our window
   if (seq < totalPkts && !acked[seq] && seq >= sendBase) {
     networkLayer->sendPacket(packetBuffer[seq]);
     sentTime[seq] = nowMs();
+    retransmitted[seq] = true;
 
-    // Schedule another timeout
     framework::SetTimeout((long)getRTO(), this, tag);
 
-    ccOnLoss();
+    // Timeouts are severe — reset cwnd
+    ccOnTimeout();
   }
 }
 
