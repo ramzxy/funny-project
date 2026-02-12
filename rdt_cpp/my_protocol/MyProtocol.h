@@ -67,8 +67,8 @@ private:
   std::mutex senderMtx; // guards sender state accessed from TimeoutElapsed
 
   // Congestion control (CUBIC-inspired)
-  double cwnd = 10.0;
-  double ssthresh = 64.0;
+  double cwnd = 8.0;
+  double ssthresh = 40.0;
   double wMax = 0.0;
   int64_t lastLossTime = 0;
   int64_t lastLossEventTime = 0; // for deduplicating loss events
@@ -80,11 +80,19 @@ private:
   uint32_t recoverySeq = 0; // highest seq when recovery started
 
   // RTT estimation (Jacobson/Karels)
-  double estRtt = 200.0; // ms
-  double devRtt = 50.0;  // ms
+  double estRtt = 500.0; // ms
+  double devRtt = 100.0; // ms — initial RTO = 500+400 = 900ms
+  double rtoBackoff = 1.0; // exponential backoff multiplier (standard TCP)
 
   // Retransmit tracking
   std::vector<bool> retransmitted; // has this packet been retransmitted?
+
+  // Duplicate ACK detection (for head-of-line retransmit)
+  uint32_t lastAckBase = 0;
+  uint32_t dupAckCount = 0;
+
+  // Pacing
+  int64_t lastSendTime = 0;
 
   void ccOnAck(uint32_t ackedCount);
   void ccOnLoss();
