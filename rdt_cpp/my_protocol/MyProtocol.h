@@ -20,10 +20,8 @@
 #include "../framework/IRDTProtocol.h"
 #include "../framework/NetworkLayer.h"
 #include "../framework/Utils.h"
-#include <chrono>
-#include <cstdio>
-#include <iostream>
-#include <mutex>
+#include <cstdint>
+#include <string>
 #include <vector>
 
 namespace my_protocol {
@@ -55,7 +53,9 @@ private:
   };
 
   static const uint32_t WINDOW = 16;
+  static const uint32_t SACK_BITS = 16;
   static const int64_t TIMEOUT_MS = 700;
+  static const int64_t ACK_KEEPALIVE_MS = 150;
 
   // ── Sender state ──
   std::vector<std::vector<int32_t>> packetBuffer;

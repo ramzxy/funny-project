@@ -83,7 +83,7 @@ bool MyProtocol::verifyAckChecksum(const std::vector<int32_t> &pkt) {
 
 // ─────────────────── Constructor / Destructor ───────────────────
 
-MyProtocol::MyProtocol() { this->networkLayer = NULL; }
+MyProtocol::MyProtocol() { this->networkLayer = nullptr; }
 
 MyProtocol::~MyProtocol() {}
 
@@ -92,7 +92,7 @@ void MyProtocol::setStop() { this->stop = true; }
 // ─────────────────── SENDER ───────────────────
 //
 // Dead-simple sliding window. No framework timers. No threads. No mutex.
-// One loop: receive ACKs → retransmit stale → send new → sleep 1ms.
+// One loop: receive ACKs -> retransmit stale -> send new -> sleep 1ms.
 // XOR checksum on ACKs prevents corrupted ACKs from causing data loss.
 
 void MyProtocol::sender() {
@@ -144,8 +144,8 @@ void MyProtocol::sender() {
       }
 
       // SACK
-      for (int i = 0; i < 16; i++) {
-        if ((sm >> i) & 1) {
+      for (uint32_t i = 0; i < SACK_BITS; i++) {
+        if ((sm >> i) & 1U) {
           uint32_t s = ab + i;
           if (s < nextSeq && s < totalPkts)
             acked[s] = true;
@@ -228,10 +228,10 @@ std::vector<int32_t> MyProtocol::receiver() {
       }
 
       uint16_t sackMask = 0;
-      for (int i = 0; i < 16; i++) {
+      for (uint32_t i = 0; i < SACK_BITS; i++) {
         uint32_t checkSeq = recvExpected + i;
         if (checkSeq < expectedTotal && received[checkSeq]) {
-          sackMask |= (1 << i);
+          sackMask |= (1U << i);
         }
       }
 
@@ -246,7 +246,7 @@ std::vector<int32_t> MyProtocol::receiver() {
       }
     } else {
       int64_t now = nowMs();
-      if (!lastAck.empty() && (now - lastRecvTime) > 150) {
+      if (!lastAck.empty() && (now - lastRecvTime) > ACK_KEEPALIVE_MS) {
         networkLayer->sendPacket(lastAck);
         lastRecvTime = now;
       }
