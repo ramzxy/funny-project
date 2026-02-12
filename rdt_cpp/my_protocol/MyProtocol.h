@@ -53,7 +53,7 @@ private:
   enum : uint32_t {
     DATA_HEADER = 5, // type(1) + seq(2) + totalPkts(2)
     ACK_HEADER = 11, // type(1) + ackBase(2) + sackMask(8)
-    DATASIZE = 100,  // payload bytes per data packet
+    DATASIZE = 200,  // payload bytes per data packet (sweet spot)
     TYPE_DATA = 0,
     TYPE_ACK = 1
   };
@@ -68,8 +68,8 @@ private:
   std::mutex senderMtx;
 
   // ── Congestion control — server-tuned AIMD ──
-  double cwnd = 10.0;
-  double ssthresh = 30.0;
+  double cwnd = 5.0;      // scaled for 2x bigger packets
+  double ssthresh = 15.0;  // scaled for 2x bigger packets
   int64_t lastLossTime = 0;
 
   // ── RTT estimation (Jacobson/Karels) ──

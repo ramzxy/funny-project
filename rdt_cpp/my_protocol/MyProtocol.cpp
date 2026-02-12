@@ -97,8 +97,8 @@ void MyProtocol::ccOnAck(uint32_t ackedCount) {
     // Additive increase: +2.0 per full window of ACKs (fast ramp)
     cwnd += 2.0 * ackedCount / cwnd;
   }
-  if (cwnd > 30.0)
-    cwnd = 30.0;
+  if (cwnd > 15.0)
+    cwnd = 15.0;
 }
 
 void MyProtocol::ccOnLoss() {
@@ -261,11 +261,11 @@ void MyProtocol::sender() {
     // Send at most 2 packets per loop iteration, paced by RTT/cwnd.
     {
       std::lock_guard<std::mutex> lock(senderMtx);
-      uint32_t effectiveWindow = (uint32_t)std::min(cwnd, 30.0);
+      uint32_t effectiveWindow = (uint32_t)std::min(cwnd, 15.0);
       int64_t now = nowMs();
       double pacingMs = estRtt / std::max(cwnd, 1.0);
-      if (pacingMs < 10.0)
-        pacingMs = 10.0; // prevent micro-bursts that congest the server
+      if (pacingMs < 20.0)
+        pacingMs = 20.0; // 2x for 2x bigger packets
       int sent = 0;
 
       while (nextSeq < totalPkts && nextSeq < sendBase + effectiveWindow &&
