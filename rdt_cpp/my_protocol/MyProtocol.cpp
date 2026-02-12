@@ -104,22 +104,29 @@ void MyProtocol::ccOnAck(uint32_t ackedCount) {
 }
 
 void MyProtocol::ccOnLoss() {
+  // Deduplicate loss events: only cut window once per RTT
+  int64_t now = nowMs();
+  if (now - lastLossEventTime < (int64_t)estRtt) {
+    return; // already handled a loss recently
+  }
+  lastLossEventTime = now;
+
   wMax = cwnd;
   if (wMax < 2.0)
     wMax = 2.0;
   cwnd = cwnd * CUBIC_BETA;
   ssthresh = cwnd;
-  lastLossTime = nowMs();
+  lastLossTime = now;
   if (cwnd < 2.0)
     cwnd = 2.0;
 }
 
 double MyProtocol::getRTO() {
   double rto = estRtt + 4.0 * devRtt;
-  if (rto < 200.0)
-    rto = 200.0;
-  if (rto > 5000.0)
-    rto = 5000.0;
+  if (rto < 100.0)
+    rto = 100.0;
+  if (rto > 3000.0)
+    rto = 3000.0;
   return rto;
 }
 
@@ -129,6 +136,40 @@ void MyProtocol::updateRTT(double sampleMs) {
   double error = std::abs(sampleMs - estRtt);
   devRtt = 0.75 * devRtt + 0.25 * error;
   estRtt = 0.875 * estRtt + 0.125 * sampleMs;
+}
+
+// ── SACK-based fast retransmit ──
+
+void MyProtocol::sackRetransmit(uint32_t ackBase, uint64_t sackMask) {
+  // Find gaps in SACK: packets between ackBase and the highest SACK'd packet
+  // that haven't been received yet — retransmit them immediately.
+  if (sackMask == 0)
+    return;
+
+  // Find highest SACK'd offset
+  int highestBit = -1;
+  for (int i = 63; i >= 0; i--) {
+    if ((sackMask >> i) & 1) {
+      highestBit = i;
+      break;
+    }
+  }
+  if (highestBit < 0)
+    return;
+
+  // Retransmit gaps: packets from ackBase to ackBase+highestBit that are NOT in SACK
+  for (int i = 0; i <= highestBit; i++) {
+    uint32_t seq = ackBase + i;
+    if (seq >= totalPkts)
+      break;
+    if (!acked[seq] && !((sackMask >> i) & 1) && !fastRetransmitted[seq]) {
+      networkLayer->sendPacket(packetBuffer[seq]);
+      sentTime[seq] = nowMs();
+      framework::SetTimeout((long)getRTO(), this, (int32_t)seq);
+      fastRetransmitted[seq] = true;
+      ccOnLoss(); // only triggers once per RTT due to dedup
+    }
+  }
 }
 
 // ─────────────────── Constructor / Destructor ───────────────────
@@ -158,6 +199,7 @@ void MyProtocol::sender() {
   packetBuffer.resize(totalPkts);
   acked.resize(totalPkts, false);
   sentTime.resize(totalPkts, 0);
+  fastRetransmitted.resize(totalPkts, false);
 
   for (uint32_t i = 0; i < totalPkts; i++) {
     uint32_t offset = i * DATASIZE;
@@ -168,6 +210,7 @@ void MyProtocol::sender() {
   sendBase = 0;
   nextSeq = 0;
   lastLossTime = nowMs();
+  lastLossEventTime = 0;
 
   // Main sender loop
   while (!stop) {
@@ -214,6 +257,11 @@ void MyProtocol::sender() {
           if ((sackMask >> i) & 1) {
             uint32_t sackSeq = ackBase + i;
             if (sackSeq < totalPkts && !acked[sackSeq]) {
+              // RTT sample from SACK'd packets too
+              if (sentTime[sackSeq] > 0 && !fastRetransmitted[sackSeq]) {
+                double sample = (double)(nowMs() - sentTime[sackSeq]);
+                updateRTT(sample);
+              }
               acked[sackSeq] = true;
               ackedCount++;
             }
@@ -223,6 +271,9 @@ void MyProtocol::sender() {
         if (ackedCount > 0) {
           ccOnAck(ackedCount);
         }
+
+        // Fast retransmit: use SACK info to retransmit missing packets
+        sackRetransmit(ackBase, sackMask);
 
         // Check if all packets have been acked
         if (sendBase >= totalPkts) {

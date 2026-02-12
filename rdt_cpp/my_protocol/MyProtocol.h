@@ -67,21 +67,26 @@ private:
   std::mutex senderMtx; // guards sender state accessed from TimeoutElapsed
 
   // Congestion control (CUBIC-inspired)
-  double cwnd = 4.0;
+  double cwnd = 10.0;
   double ssthresh = 64.0;
   double wMax = 0.0;
   int64_t lastLossTime = 0;
+  int64_t lastLossEventTime = 0; // for deduplicating loss events
   static constexpr double CUBIC_C = 0.4;
   static constexpr double CUBIC_BETA = 0.7;
 
   // RTT estimation (Jacobson/Karels)
-  double estRtt = 500.0; // ms
-  double devRtt = 100.0; // ms
+  double estRtt = 200.0; // ms
+  double devRtt = 50.0;  // ms
+
+  // Fast retransmit tracking
+  std::vector<bool> fastRetransmitted; // already fast-retransmitted?
 
   void ccOnAck(uint32_t ackedCount);
   void ccOnLoss();
   double getRTO();
   void updateRTT(double sampleMs);
+  void sackRetransmit(uint32_t ackBase, uint64_t sackMask);
 
   // Build helpers
   std::vector<int32_t> buildDataPacket(uint32_t seq, uint32_t total,
