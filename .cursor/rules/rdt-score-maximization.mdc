@@ -1,0 +1,72 @@
+---
+description: RDT Challenge score maximization strategy for the University of Twente challenge server (challenges.dacs.utwente.nl:8002, protocol RDTCHALLENGE/5.0)
+alwaysApply: true
+---
+
+# RDT Challenge — Maximize Score
+
+## Server Architecture
+
+This project implements a reliable data transfer protocol for the University of Twente RDT Challenge.
+
+- **Server**: `challenges.dacs.utwente.nl:8002` (protocol `RDTCHALLENGE/5.0`)
+- **Scoring is 100% server-side** — the client only receives a `FINISH <score>` message. All metrics are computed on the server.
+- The server acts as a **lossy relay** between sender and receiver — it simulates packet loss, delay, reordering, and possibly corruption.
+- **Correctness is verified via CRC32** — the server sends a random `challenge` nonce at simulation start. Both sides compute `CRC32(challenge + fileContents)` and the server compares them. If they don't match, the transfer fails.
+- Framework files (`framework/`) must NOT be edited. Only `my_protocol/MyProtocol.cpp`, `my_protocol/MyProtocol.h`, and `my_protocol/Program.cpp` are editable.
+
+## What the Server Likely Measures
+
+Since scoring is opaque, these are the probable metrics based on typical RDT challenge grading:
+
+1. **Correctness** — checksums must match (binary pass/fail gate)
+2. **Transfer speed** — wall-clock time from first packet to completion
+3. **Efficiency** — ratio of unique data packets to total packets sent (fewer retransmissions = better)
+4. **Larger files score higher** — test files 1-6 range from 248 to 141,270 bytes
+
+## Score Maximization Strategy
+
+When modifying the protocol, always optimize for **fastest correct transfer with fewest retransmissions**. Specific levers:
+
+### Congestion Window & Slow Start
+- **Higher initial `cwnd`** — starting conservatively (e.g. 8) wastes the slow-start phase. Consider 16-20 if the channel allows it.
+- **Raise the `cwnd` hard cap** — a cap of 50 may leave throughput on the table. Experiment with higher values (64-100+) especially for large files.
+- **Aggressive slow-start threshold** — a high initial `ssthresh` (e.g. 40+) lets slow-start run longer before switching to congestion avoidance.
+
+### Loss Recovery
+- **SACK-based fast retransmit** — retransmit only the specific missing packets, not the entire window.
+- **Minimize duplicate retransmissions** — track what has already been retransmitted to avoid wasting bandwidth.
+- **Keep `CUBIC_BETA` high** (e.g. 0.7-0.8) — less aggressive window reduction on loss preserves throughput.
+
+### Timing & Pacing
+- **Lower RTO floor** — 300ms minimum RTO is safe but slow. If measured RTTs are low (e.g. 50-100ms), reduce the floor to 150-200ms.
+- **RTO ceiling** — keep it reasonable (e.g. 3-5 seconds) to avoid long stalls.
+- **Pacing** — spread packets across time instead of bursting to reduce self-induced congestion.
+- **Reduce loop sleep** — 1ms sleep between send iterations is fine but ensure it doesn't bottleneck throughput.
+
+### Packet Size
+- **Larger `DATASIZE`** reduces per-packet overhead (fewer headers, fewer ACKs) but risks more data loss per dropped packet. 100 bytes is small — experiment with 128-200 if the server allows it.
+
+### RTT Estimation
+- **Karn's algorithm** — only sample RTT from non-retransmitted packets to avoid ambiguity.
+- **Smooth aggressively** — standard Jacobson/Karels (alpha=0.125, beta=0.25) works well but devRtt weight can be tuned.
+
+### Testing Strategy
+- Always test with **file 6** (141,270 bytes) for meaningful throughput numbers.
+- Run multiple times — the lossy channel is randomized, so scores vary between runs.
+- Compare scores when tuning a single parameter at a time.
+
+## Anti-Patterns to Avoid
+
+- **Stop-and-wait** — sending one packet and waiting for its ACK is orders of magnitude slower than pipelining.
+- **Fixed window without congestion control** — will either under-utilize the channel or cause massive loss.
+- **Ignoring SACK** — cumulative ACK alone triggers unnecessary retransmissions.
+- **Retransmitting already-acked packets** — wastes bandwidth and hurts efficiency score.
+- **Very small initial window** — wastes precious time during slow start on large files.
+
+## Cheating Is Not Viable
+
+- CRC uses a per-session random nonce — checksums cannot be forged.
+- All traffic goes through the server relay — no out-of-band shortcuts.
+- Framework code handles checksum computation — cannot be bypassed.
+- The only path to the highest score is a genuinely fast, efficient, correct protocol.
